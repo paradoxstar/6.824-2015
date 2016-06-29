@@ -119,6 +119,10 @@ func setup(t *testing.T, tag string, unreliable bool) *tCluster {
 	return tc
 }
 
+func show(sv *ShardKV) {
+	DPrintf("skv %v, %v", sv.me, sv.keyvalue)
+}
+
 func TestBasic(t *testing.T) {
 	tc := setup(t, "basic", false)
 	defer tc.cleanup()
@@ -126,8 +130,11 @@ func TestBasic(t *testing.T) {
 	fmt.Printf("Test: Basic Join/Leave ...\n")
 
 	tc.join(0)
-
+	DPrintf("%v\n", tc.masters[0])
+	DPrintf("-----------------------------------------\n-")
 	ck := tc.clerk()
+
+	DPrintf("%v", tc.mck.Query(-1))
 
 	ck.Put("a", "x")
 	ck.Append("a", "b")
@@ -142,13 +149,23 @@ func TestBasic(t *testing.T) {
 		vals[i] = strconv.Itoa(rand.Int())
 		ck.Put(keys[i], vals[i])
 	}
+	DPrintf("-------------------------------------------\n")
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			DPrintf("--------Group %d, Peer%d, kv:%v\n", i, j, tc.groups[i].servers[j].keyvalue)
+		}
+	}
 
 	// are keys still there after joins?
 	for g := 1; g < len(tc.groups); g++ {
 		tc.join(g)
 		time.Sleep(1 * time.Second)
+		DPrintf("Finished join loop:%d\n ", g)
+		DPrintf("%v\n", tc.masters[0])
 		for i := 0; i < len(keys); i++ {
+			DPrintf("Begin Get key!\n")
 			v := ck.Get(keys[i])
+			DPrintf("Get Keys: %v\n", v)
 			if v != vals[i] {
 				t.Fatalf("joining; wrong value; g=%v k=%v wanted=%v got=%v",
 					g, keys[i], vals[i], v)
@@ -308,6 +325,9 @@ func doConcurrent(t *testing.T, unreliable bool) {
 	for i := 0; i < len(tc.groups); i++ {
 		tc.join(i)
 	}
+	DPrintf("%v\n", tc.masters[0])
+	DPrintf("-----------------------------------------\n-")
+	DPrintf("%v", tc.mck.Query(-1))
 
 	const npara = 11
 	var ca [npara]chan bool
@@ -338,7 +358,7 @@ func doConcurrent(t *testing.T, unreliable bool) {
 			}
 		}(i)
 	}
-
+	DPrintf("Done!\n")
 	for i := 0; i < npara; i++ {
 		x := <-ca[i]
 		if x == false {

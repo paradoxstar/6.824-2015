@@ -33,6 +33,9 @@ import "hash/fnv"
 // and runs Reduce on those files.  This produces <nReduce> result files,
 // which Merge() merges into a single output.
 
+//Add by owen
+const scheme2_on = false
+
 // Debugging
 const Debug = 0
 
@@ -64,6 +67,7 @@ type MapReduce struct {
 	Workers map[string]*WorkerInfo
 
 	// add any additional state here
+	availWorkers chan string
 }
 
 func InitMapReduce(nmap int, nreduce int,
@@ -78,6 +82,8 @@ func InitMapReduce(nmap int, nreduce int,
 	mr.DoneChannel = make(chan bool)
 
 	// initialize any additional state here
+	mr.Workers = make(map[string]*WorkerInfo)
+	mr.availWorkers = make(chan string, 10)
 	return mr
 }
 
@@ -90,8 +96,9 @@ func MakeMapReduce(nmap int, nreduce int,
 }
 
 func (mr *MapReduce) Register(args *RegisterArgs, res *RegisterReply) error {
-	DPrintf("Register: worker %s\n", args.Worker)
+	DPrintf("Register start: worker %s\n", args.Worker)
 	mr.registerChannel <- args.Worker
+	DPrintf("Register worker: %s is sent into registerChannel\n", args.Worker)
 	res.OK = true
 	return nil
 }
@@ -112,6 +119,9 @@ func (mr *MapReduce) StartRegistrationServer() {
 		log.Fatal("RegstrationServer", mr.MasterAddress, " error: ", e)
 	}
 	mr.l = l
+
+	//add by OwenYu
+	DPrintf("RegistrationServer: start\n")
 
 	// now that we are listening on the master address, can fork off
 	// accepting connections to another thread.
@@ -202,7 +212,7 @@ func DoMap(JobNumber int, fileName string,
 		log.Fatal("DoMap: ", err)
 	}
 	size := fi.Size()
-	fmt.Printf("DoMap: read split %s %d\n", name, size)
+	//fmt.Printf("DoMap: read split %s %d\n", name, size)
 	b := make([]byte, size)
 	_, err = file.Read(b)
 	if err != nil {
@@ -241,7 +251,7 @@ func DoReduce(job int, fileName string, nmap int,
 	kvs := make(map[string]*list.List)
 	for i := 0; i < nmap; i++ {
 		name := ReduceName(fileName, i, job)
-		fmt.Printf("DoReduce: read %s\n", name)
+		//fmt.Printf("DoReduce: read %s\n", name)
 		file, err := os.Open(name)
 		if err != nil {
 			log.Fatal("DoReduce: ", err)
@@ -286,7 +296,7 @@ func (mr *MapReduce) Merge() {
 	kvs := make(map[string]string)
 	for i := 0; i < mr.nReduce; i++ {
 		p := MergeName(mr.file, i)
-		fmt.Printf("Merge: read %s\n", p)
+		DPrintf("Merge: read %s\n", p)
 		file, err := os.Open(p)
 		if err != nil {
 			log.Fatal("Merge: ", err)
@@ -370,7 +380,13 @@ func (mr *MapReduce) Run() {
 	fmt.Printf("Run mapreduce job %s %s\n", mr.MasterAddress, mr.file)
 
 	mr.Split(mr.file)
-	mr.stats = mr.RunMaster()
+	//Add by Owen
+	if scheme2_on {
+		mr.stats = mr.RunMaster_scheme2()
+	} else {
+		mr.stats = mr.RunMaster()
+	}
+
 	mr.Merge()
 	mr.CleanupRegistration()
 

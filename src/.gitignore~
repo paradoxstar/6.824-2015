@@ -15,4 +15,4 @@ mrtmp.*
 /shardkv/*.fail
 
 /mapreduce/testresult
-/pbservice/testresult
+

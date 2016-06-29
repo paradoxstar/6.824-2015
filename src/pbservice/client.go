@@ -3,14 +3,15 @@ package pbservice
 import "viewservice"
 import "net/rpc"
 import "fmt"
+import "time"
 
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	primary string
 }
 
 // this may come in handy.
@@ -25,10 +26,9 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
-
+	ck.primary = ck.vs.Primary()
 	return ck
 }
-
 
 //
 // call() sends an RPC to the rpcname handler on server srv
@@ -74,8 +74,23 @@ func call(srv string, rpcname string,
 func (ck *Clerk) Get(key string) string {
 
 	// Your code here.
+	args := &GetArgs{key}
+	var reply GetReply
+	DPrintf("Get Parameter: " + key + "\n")
 
-	return "???"
+	//send get_rpc until can ensure the Operation is done successfully
+	//once per PingInterval with the update of primary
+	for {
+		ok := call(ck.primary, "PBServer.Get", args, &reply)
+		DPrintf("ok = %d && reply.Err = %s\n", ok, reply.Err)
+		if ok && reply.Err == OK {
+			//done successfully
+			DPrintf(reply.Value + "\n")
+			return reply.Value
+		}
+		time.Sleep(viewservice.PingInterval)
+		ck.primary = ck.vs.Primary()
+	}
 }
 
 //
@@ -84,6 +99,23 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+	index := nrand()
+	args := &PutAppendArgs{key, value, op, index}
+	DPrintf("Parameter: "+key+"|"+value+"|"+op+"|"+"%d\n", index)
+	var reply PutAppendReply
+
+	//send put$append_rpc until can ensure the Operation is done successfully
+	//once per PingInterval with the update of primary
+	for {
+		ok := call(ck.primary, "PBServer.PutAppend", args, &reply)
+		DPrintf("ok = %d && reply.Err = %s\n", ok, reply.Err)
+		if ok && reply.Err == OK {
+			//done successfully
+			return
+		}
+		time.Sleep(viewservice.PingInterval)
+		ck.primary = ck.vs.Primary()
+	}
 }
 
 //

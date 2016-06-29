@@ -31,7 +31,6 @@ import "sync/atomic"
 import "fmt"
 import "math/rand"
 
-
 // px.Status() return values, indicating
 // whether an agreement has been decided,
 // or Paxos has not yet reached agreement,
@@ -44,6 +43,11 @@ const (
 	Forgotten      // decided but forgotten.
 )
 
+const (
+	OK     = "OK"
+	Reject = "Reject"
+)
+
 type Paxos struct {
 	mu         sync.Mutex
 	l          net.Listener
@@ -53,8 +57,58 @@ type Paxos struct {
 	peers      []string
 	me         int // index into peers[]
 
-
 	// Your data here.
+	offset     int
+	acceptor   map[int]*AcceptState
+	prepareNum map[int]int
+	dones      []int
+}
+
+type AcceptState struct {
+	maxPrepareNum int
+	acceptNum     int
+	acceptValue   interface{}
+	state         Fate
+	decided       NumValuePair
+}
+
+type NumValuePair struct {
+	Number int
+	Value  interface{}
+}
+
+type PrepareArgs struct {
+	InstanceId int
+	PrepareNum int
+}
+
+type PrepareReply struct {
+	State       string
+	AcceptNum   int
+	AcceptValue interface{}
+	isDecided   bool
+	maxPreNum   int
+}
+
+type AcceptArgs struct {
+	InstanceId  int
+	AcceptNum   int
+	AcceptValue interface{}
+}
+
+type AcceptReply struct {
+	State     string
+	AcceptNum int
+}
+
+type DecisionArgs struct {
+	Sender      int
+	Done        int
+	InstanceId  int
+	Decidedinfo NumValuePair
+}
+
+type DecisionReply struct {
 }
 
 //
@@ -93,6 +147,205 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	return false
 }
 
+func (px *Paxos) PrepareHandle(args *PrepareArgs, reply *PrepareReply) error {
+
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	instId := args.InstanceId
+	prepNum := args.PrepareNum
+	reply.isDecided = false
+	reply.State = Reject
+
+	//	log.Printf("Peer%d receives the prepare call, for instance%d, prepareNum%d\n", px.me, instId, prepNum)
+	_, exist := px.acceptor[instId]
+	if !exist {
+		//		log.Printf("initial\n")
+		px.acceptor[instId] = &AcceptState{maxPrepareNum: prepNum, acceptNum: -1, acceptValue: nil, state: Pending}
+		reply.State = OK
+		reply.AcceptNum = -1
+		reply.AcceptValue = nil
+		reply.maxPreNum = prepNum
+	} else {
+		//		log.Printf("update\n")
+		if prepNum > px.acceptor[instId].maxPrepareNum {
+			px.acceptor[instId].maxPrepareNum = prepNum
+			reply.State = OK
+			reply.AcceptNum = px.acceptor[instId].acceptNum
+			reply.AcceptValue = px.acceptor[instId].acceptValue
+			reply.maxPreNum = px.acceptor[instId].maxPrepareNum
+		}
+	}
+
+	if px.acceptor[instId].state == Decided {
+		reply.isDecided = true
+	}
+	return nil
+}
+
+func (px *Paxos) BroadcastPrepare(seq int, v interface{}) (bool, bool, []int, NumValuePair) {
+
+	//Find proper prepareNum
+	px.mu.Lock()
+	_, exist := px.prepareNum[seq]
+	if !exist {
+		px.prepareNum[seq] = px.me
+	} else {
+		px.prepareNum[seq] += px.offset
+	}
+
+	prepNum := px.prepareNum[seq]
+	px.mu.Unlock()
+
+	//	log.Printf("Peer%d send prepare%d for instance%d\n", px.me, px.prepareNum[seq], seq)
+
+	//send prepare and receive
+	isDecided := false
+	isMajority := false
+	highestAccept := NumValuePair{Number: -1, Value: v}
+	OKAnsPeer := make([]int, 0)
+	maxPre := -1
+
+	args := PrepareArgs{InstanceId: seq, PrepareNum: prepNum}
+
+	for i := 0; i < len(px.peers); i++ {
+		//log.Printf("Peer%d send prepare%d for instance%d to Peer%d\n", px.me, prepNum, seq, i)
+		var reply PrepareReply
+		if i != px.me {
+			call(px.peers[i], "Paxos.PrepareHandle", &args, &reply)
+		} else {
+			px.PrepareHandle(&args, &reply)
+		}
+		if reply.State == OK {
+			OKAnsPeer = append(OKAnsPeer, i)
+			if reply.AcceptNum > highestAccept.Number {
+				highestAccept.Number = reply.AcceptNum
+				highestAccept.Value = reply.AcceptValue
+			}
+			if reply.maxPreNum > maxPre {
+				maxPre = reply.maxPreNum
+			}
+		}
+		if reply.isDecided {
+			isDecided = true
+		}
+	}
+
+	highestAccept.Number = prepNum
+	//log.Printf("OKAnsPrepare:%d\n", len(OKAnsPeer))
+	if len(OKAnsPeer) >= (len(px.peers)/2 + 1) {
+		isMajority = true
+	}
+
+	//log.Printf("PrepareBroadcast returns:%v, %v, %v, %v", isDecided, isMajority, OKAnsPeer, highestAccept)
+	return isDecided, isMajority, OKAnsPeer, highestAccept
+}
+
+func (px *Paxos) BroadcastAccept(seq int, AnswerPrepare []int, acceptInfo NumValuePair) bool {
+
+	//log.Printf("Peer%d send accept%d for instance%d \n", px.me, acceptInfo.Number, seq)
+
+	//send accept and receive
+	OKAnsPeer := make([]int, 0)
+	isMajority := false
+
+	args := AcceptArgs{InstanceId: seq, AcceptNum: acceptInfo.Number, AcceptValue: acceptInfo.Value}
+	for i := range AnswerPrepare {
+		var reply AcceptReply
+		if AnswerPrepare[i] != px.me {
+			call(px.peers[AnswerPrepare[i]], "Paxos.AcceptHandle", &args, &reply)
+		} else {
+			px.AcceptHandle(&args, &reply)
+		}
+		if reply.State == OK {
+			OKAnsPeer = append(OKAnsPeer, i)
+		}
+	}
+
+	//log.Printf("OKAnsAccept:%d\n", len(OKAnsAccept))
+
+	// majority
+	if len(OKAnsPeer) >= (len(px.peers)/2 + 1) {
+		isMajority = true
+	}
+
+	return isMajority
+}
+
+func (px *Paxos) AcceptHandle(args *AcceptArgs, reply *AcceptReply) error {
+
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	instId := args.InstanceId
+	acceptnumber := args.AcceptNum
+	acceptvalue := args.AcceptValue
+
+	//log.Printf("Peer%d receives the accept call, for instance%d, prepareNum%d\n", px.me, instId, acceptnumber)
+
+	_, exist := px.acceptor[instId]
+
+	if !exist {
+		reply.State = Reject
+	} else {
+		if acceptnumber >= px.acceptor[instId].maxPrepareNum {
+			px.acceptor[instId].acceptNum = acceptnumber
+			px.acceptor[instId].acceptValue = acceptvalue
+			px.acceptor[instId].maxPrepareNum = acceptnumber
+			reply.State = OK
+			reply.AcceptNum = acceptnumber
+		} else {
+			reply.State = Reject
+		}
+	}
+
+	return nil
+}
+
+func (px *Paxos) BroadcastDecide(seq int, decidedInfo NumValuePair) {
+
+	//log.Printf("Peer%d sends the decided call, for instance%d\n", px.me, seq)
+
+	//send decided
+	px.mu.Lock()
+	done := px.dones[px.me]
+	px.mu.Unlock()
+	args := DecisionArgs{InstanceId: seq, Sender: px.me, Done: done}
+	args.Decidedinfo.Number = decidedInfo.Number
+	args.Decidedinfo.Value = decidedInfo.Value
+	for i := 0; i < len(px.peers); i++ {
+		var reply DecisionReply
+		if i != px.me {
+			call(px.peers[i], "Paxos.DecideHandle", &args, &reply)
+		} else {
+			px.DecideHandle(&args, &reply)
+		}
+	}
+
+}
+
+func (px *Paxos) DecideHandle(args *DecisionArgs, reply *DecisionReply) error {
+
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	//log.Printf("Peer%d receives the decided call, for instance%d\n", px.me, args.InstanceId)
+
+	_, exist := px.acceptor[args.InstanceId]
+
+	if !exist {
+		px.acceptor[args.InstanceId] = &AcceptState{maxPrepareNum: -1, acceptNum: -1, acceptValue: ""}
+	}
+	px.acceptor[args.InstanceId].maxPrepareNum = args.Decidedinfo.Number
+	px.acceptor[args.InstanceId].acceptValue = args.Decidedinfo.Value
+	px.acceptor[args.InstanceId].acceptNum = args.Decidedinfo.Number
+	px.acceptor[args.InstanceId].decided = args.Decidedinfo
+	px.acceptor[args.InstanceId].state = Decided
+	px.dones[args.Sender] = args.Done
+
+	return nil
+
+}
 
 //
 // the application wants paxos to start agreement on
@@ -103,6 +356,36 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
+
+	go func() {
+		//forgotten
+		if seq < px.Min() {
+			//log.Printf("Peer%d submit instance%d, forgotten, return directly\n", px.me, seq)
+			return
+		}
+
+		//log.Printf("Peer%d submit instance%d\n", px.me, seq)
+		for {
+			isDecided, isPreMajority, AnswerPrepare, acceptInfo := px.BroadcastPrepare(seq, v)
+
+			if isDecided {
+				break
+			}
+			if !isPreMajority {
+				continue
+			}
+
+			isAccMajority := px.BroadcastAccept(seq, AnswerPrepare, acceptInfo)
+
+			if !isAccMajority {
+				continue
+			}
+
+			px.BroadcastDecide(seq, acceptInfo)
+
+			break
+		}
+	}()
 }
 
 //
@@ -113,6 +396,9 @@ func (px *Paxos) Start(seq int, v interface{}) {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
+	if px.dones[px.me] < seq {
+		px.dones[px.me] = seq
+	}
 }
 
 //
@@ -122,7 +408,8 @@ func (px *Paxos) Done(seq int) {
 //
 func (px *Paxos) Max() int {
 	// Your code here.
-	return 0
+
+	return len(px.acceptor) - 1
 }
 
 //
@@ -155,7 +442,25 @@ func (px *Paxos) Max() int {
 //
 func (px *Paxos) Min() int {
 	// You code here.
-	return 0
+
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	min := px.dones[px.me]
+	for k := range px.dones {
+		if min > px.dones[k] {
+			min = px.dones[k]
+		}
+	}
+
+	for k, _ := range px.acceptor {
+		if k <= min && px.acceptor[k].state == Decided {
+			delete(px.acceptor, k)
+			delete(px.prepareNum, k)
+		}
+	}
+
+	return min + 1
 }
 
 //
@@ -166,11 +471,24 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
-	// Your code here.
+	// Your code here
+
+	//log.Printf("judge status of %d\n", seq)
+	if seq < px.Min() {
+		//	log.Printf("forgotten\n")
+		return Forgotten, nil
+	}
+	//log.Printf("no forgotten\n")
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	_, exist := px.acceptor[seq]
+
+	if exist {
+		return px.acceptor[seq].state, px.acceptor[seq].decided.Value
+	}
 	return Pending, nil
 }
-
-
 
 //
 // tell the peer to shut itself down.
@@ -214,8 +532,16 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.peers = peers
 	px.me = me
 
-
 	// Your initialization code here.
+	px.dead = 0
+	px.unreliable = 0
+	px.offset = len(peers)
+	px.acceptor = make(map[int]*AcceptState)
+	px.prepareNum = make(map[int]int)
+	px.dones = make([]int, len(peers))
+	for i := 0; i < len(peers); i++ {
+		px.dones[i] = -1
+	}
 
 	if rpcs != nil {
 		// caller will create socket &c
@@ -267,7 +593,6 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 			}
 		}()
 	}
-
 
 	return px
 }

@@ -11,7 +11,7 @@ import "os"
 import "syscall"
 import "encoding/gob"
 import "math/rand"
-
+import "time"
 
 const Debug = 0
 
@@ -22,11 +22,14 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Type  string
+	Key   string
+	Value string
+	Index int64
 }
 
 type KVPaxos struct {
@@ -38,17 +41,113 @@ type KVPaxos struct {
 	px         *paxos.Paxos
 
 	// Your definitions here.
+	keyvalue map[string]string
+	mark     map[int64]int
+	minIns   int
 }
 
+func (kv *KVPaxos) WaitAgreement(seq int, value Op) Op {
+	kv.px.Start(seq, value)
+	to := 10 * time.Millisecond
+	for {
+		status, val := kv.px.Status(seq)
+		if status == paxos.Decided {
+			return val.(Op)
+		}
+		time.Sleep(to)
+		if to < time.Second {
+			to += 10 * time.Millisecond
+		}
+	}
+}
+
+func (kv *KVPaxos) Exec(op Op) {
+
+	if op.Type == "Put" {
+		kv.keyvalue[op.Key] = op.Value
+	} else if op.Type == "Append" {
+		_, ok := kv.keyvalue[op.Key]
+		if ok {
+			kv.keyvalue[op.Key] += op.Value
+		} else {
+			kv.keyvalue[op.Key] = op.Value
+		}
+	}
+	kv.mark[op.Index] = 1
+}
+
+func (kv *KVPaxos) Apply(op Op) (Err, string) {
+
+	DPrintf("Peer-%v, Apply operation%v\n", kv.me, op)
+	for true {
+		//if repeated operation
+		_, ok := kv.mark[op.Index]
+		if ok {
+			v, _ := kv.keyvalue[op.Key]
+			return OK, v
+		}
+
+		seq := kv.minIns + 1
+
+		//If has been decided
+		var val Op
+		isdecided, value := kv.px.Status(seq)
+		if isdecided == paxos.Decided {
+			val = value.(Op)
+			kv.Exec(val)
+			kv.px.Done(seq)
+			kv.minIns++
+			continue
+		}
+
+		//been not decided
+		val = kv.WaitAgreement(seq, op)
+		kv.Exec(val)
+		kv.px.Done(seq)
+		kv.minIns++
+
+		if val == op {
+			val, ok := kv.keyvalue[op.Key]
+			if ok {
+				return OK, val
+			} else {
+				return ErrNoKey, ""
+			}
+		}
+	}
+
+	return OK, ""
+}
 
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	key := args.Key
+	index := args.Index
+
+	err, val := kv.Apply(Op{Key: key, Index: index})
+
+	reply.Err = err
+	reply.Value = val
+
 	return nil
 }
 
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
+	key := args.Key
+	value := args.Value
+	op := args.Op
+	index := args.Index
+
+	err, _ := kv.Apply(Op{Type: op, Key: key, Value: value, Index: index})
+
+	reply.Err = err
 	return nil
 }
 
@@ -93,6 +192,9 @@ func StartServer(servers []string, me int) *KVPaxos {
 	kv := new(KVPaxos)
 	kv.me = me
 
+	kv.minIns = -1
+	kv.keyvalue = make(map[string]string)
+	kv.mark = make(map[int64]int)
 	// Your initialization code here.
 
 	rpcs := rpc.NewServer()
@@ -106,7 +208,6 @@ func StartServer(servers []string, me int) *KVPaxos {
 		log.Fatal("listen error: ", e)
 	}
 	kv.l = l
-
 
 	// please do not change any of the following code,
 	// or do anything to subvert it.

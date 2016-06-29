@@ -50,9 +50,11 @@ func TestBasicFail(t *testing.T) {
 
 	deadtime := viewservice.PingInterval * viewservice.DeadPings
 	time.Sleep(deadtime * 2)
+	DPrintf("PBServer started!\n")
 	if vck.Primary() != s1.me {
 		t.Fatal("first primary never formed view")
 	}
+	DPrintf("Begin one primary work!\n")
 
 	ck.Put("111", "v1")
 	check(ck, "111", "v1")
@@ -108,14 +110,18 @@ func TestBasicFail(t *testing.T) {
 	// each server to Ping() the viewserver 10 times / second.
 
 	count1 := int(vs.GetRPCCount())
+	DPrintf("count1 = %d\n", count1)
 	t1 := time.Now()
 	for i := 0; i < 100; i++ {
 		ck.Put("xk"+strconv.Itoa(i), strconv.Itoa(i))
 	}
 	count2 := int(vs.GetRPCCount())
+	DPrintf("count2 = %d\n", count2)
 	t2 := time.Now()
 	dt := t2.Sub(t1)
+	DPrintf("dt = %d\n", dt)
 	allowed := 2 * (dt / (100 * time.Millisecond)) // two servers tick()ing 10/second
+	DPrintf("allowed = %d\n", allowed)
 	if (count2 - count1) > int(allowed)+20 {
 		t.Fatal("too many viewserver RPCs")
 	}
@@ -201,6 +207,7 @@ func TestAtMostOnce(t *testing.T) {
 		time.Sleep(viewservice.PingInterval)
 	}
 
+	DPrintf("view initialization done \n")
 	// give p+b time to ack, initialize
 	time.Sleep(viewservice.PingInterval * viewservice.DeadPings)
 
@@ -208,11 +215,13 @@ func TestAtMostOnce(t *testing.T) {
 	k := "counter"
 	val := ""
 	for i := 0; i < 100; i++ {
+		DPrintf("%d-th iters\n", i)
 		v := strconv.Itoa(i)
 		ck.Append(k, v)
 		val = val + v
 	}
 
+	fmt.Printf("100 Append done\n")
 	v := ck.Get(k)
 	if v != val {
 		t.Fatalf("ck.Get() returned %v but expected %v\n", v, val)
@@ -257,6 +266,7 @@ func TestFailPut(t *testing.T) {
 		t.Fatalf("wrong primary or backup")
 	}
 
+	DPrintf("initialization done\n")
 	ck := MakeClerk(vshost, "")
 
 	ck.Put("a", "aa")
@@ -346,6 +356,7 @@ func TestConcurrentSame(t *testing.T) {
 	// give p+b time to ack, initialize
 	time.Sleep(viewservice.PingInterval * viewservice.DeadPings)
 
+	DPrintf("view initialization done \n")
 	done := int32(0)
 
 	view1, _ := vck.Get()
@@ -470,7 +481,7 @@ func TestConcurrentSameAppend(t *testing.T) {
 	time.Sleep(viewservice.PingInterval * viewservice.DeadPings)
 
 	view1, _ := vck.Get()
-
+	DPrintf("view initialization done \n")
 	// code for i'th concurrent client thread.
 	ff := func(i int, ch chan int) {
 		ret := -1
@@ -508,6 +519,7 @@ func TestConcurrentSameAppend(t *testing.T) {
 	// check that primary's copy of the value has all
 	// the Append()s.
 	primaryv := ck.Get("k")
+	DPrintf(primaryv + "\n")
 	checkAppends(t, primaryv, counts)
 
 	// kill the primary so we can check the backup

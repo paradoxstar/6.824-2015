@@ -19,8 +19,8 @@ type Worker struct {
 }
 
 // The master sent us a job
-func (wk *Worker) DoJob(arg *DoJobArgs, res *DoJobReply) error {
-	fmt.Printf("Dojob %s job %d file %s operation %v N %d\n",
+func (wk *Worker) DoJob(arg DoJobArgs, res *DoJobReply) error {
+	DPrintf("Dojob %s job %d file %s operation %v N %d\n",
 		wk.name, arg.JobNumber, arg.File, arg.Operation,
 		arg.NumOtherPhase)
 	switch arg.Operation {
@@ -50,9 +50,11 @@ func Register(master string, me string) {
 	args.Worker = me
 	var reply RegisterReply
 	ok := call(master, "MapReduce.Register", args, &reply)
+
 	if ok == false {
 		fmt.Printf("Register: RPC %s register error\n", master)
 	}
+	DPrintf("Worker Done Register: %s\n", me)
 }
 
 // Set up a connection with the master, register with the master,
@@ -74,7 +76,10 @@ func RunWorker(MasterAddress string, me string,
 		log.Fatal("RunWorker: worker ", me, " error: ", e)
 	}
 	wk.l = l
+
+	DPrintf("Worker %s RegistrationServer: done\n", me)
 	Register(MasterAddress, me)
+	DPrintf("Worker Register: %s Done and Returned\n", me)
 
 	// DON'T MODIFY CODE BELOW
 	for wk.nRPC != 0 {

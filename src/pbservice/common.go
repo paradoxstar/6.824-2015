@@ -13,9 +13,10 @@ type PutAppendArgs struct {
 	Key   string
 	Value string
 	// You'll have to add definitions here.
-
+	Operation string
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Index int64
 }
 
 type PutAppendReply struct {
@@ -32,5 +33,13 @@ type GetReply struct {
 	Value string
 }
 
-
 // Your RPC definitions here.
+
+type BackupCopyArgs struct {
+	KeyValue map[string]string
+	Mark     map[int64]int
+}
+
+type BackupCopyReply struct {
+	Err Err
+}

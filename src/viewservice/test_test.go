@@ -45,6 +45,7 @@ func Test1(t *testing.T) {
 
 	//
 
+	DPrintf("Initialization done!\n")
 	if ck1.Primary() != "" {
 		t.Fatalf("there was a primary too soon")
 	}

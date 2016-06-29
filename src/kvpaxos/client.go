@@ -3,12 +3,13 @@ package kvpaxos
 import "net/rpc"
 import "crypto/rand"
 import "math/big"
-
+import "time"
 import "fmt"
 
 type Clerk struct {
 	servers []string
 	// You will have to modify this struct.
+	me int64
 }
 
 func nrand() int64 {
@@ -22,6 +23,7 @@ func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.me = nrand()
 	return ck
 }
 
@@ -66,7 +68,28 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	return ""
+
+	index := nrand()
+	servIndex := 0
+	args := &GetArgs{key, index}
+	var reply GetReply
+	DPrintf("CK %d Parameter: "+key+"|"+"%d\n", ck.me, index)
+
+	//send get_rpc until Operation is handled to one clerk successfully
+	for {
+		DPrintf("CK %d send Get to server%d\n", ck.me, servIndex)
+		ok := call(ck.servers[servIndex], "KVPaxos.Get", args, &reply)
+		DPrintf("ok = %d && reply.Err = %s for CK %d", ok, reply.Err, ck.me)
+		if ok && reply.Err == OK {
+			//done successfully
+			DPrintf(reply.Value + "\n")
+			return reply.Value
+		}
+		servIndex = (servIndex + 1) % len(ck.servers)
+		time.Sleep(time.Millisecond * 100)
+	}
+
+	return reply.Value
 }
 
 //
@@ -74,6 +97,26 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	index := nrand()
+	args := &PutAppendArgs{key, value, op, index}
+	servIndex := 0
+	DPrintf("CK %d Parameter: "+key+"|"+value+"|"+op+"|"+"%d\n", ck.me, index)
+	var reply PutAppendReply
+
+	//send put$append_rpc until can ensure the Operation is done successfully
+
+	for {
+		DPrintf("CK %d send PutAppend to server%d\n", ck.me, servIndex)
+		ok := call(ck.servers[servIndex], "KVPaxos.PutAppend", args, &reply)
+		DPrintf("ok = %d && reply.Err = %s for CK%d", ok, reply.Err, ck.me)
+		if ok && reply.Err == OK {
+			//done successfully
+			return
+		}
+		servIndex = (servIndex + 1) % len(ck.servers)
+		time.Sleep(time.Millisecond * 100)
+	}
+
 }
 
 func (ck *Clerk) Put(key string, value string) {
